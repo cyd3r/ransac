@@ -2,8 +2,9 @@ An implementation of the RANSAC algorithm. The goal is to provide a GPU implemen
 
 ## Requirements
 
-- numpy
-- matplotlib
+- python3
+    - numpy
+    - matplotlib
 
 ## Steps
 
