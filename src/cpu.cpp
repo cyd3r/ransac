@@ -122,8 +122,12 @@ int main(int argc, char const *argv[])
 {
     std::vector<Point> data = readCSV("points.csv");
 
-    LinearModel m = ransac(data, 100, 0.3, 30, 10);
+    clock_t t0 = clock();
+    LinearModel m = ransac(data, 50, 0.3, 30, 10);
+    clock_t t1 = clock();
+    double elapsed_secs = double(t1 - t0) / CLOCKS_PER_SEC;
 
     std::cout << "Best Model (slope, intercept): " << m.slope << ", " << m.intercept << std::endl;
+    std::cout << "Time taken: " << elapsed_secs << std::endl;
     return 0;
 }

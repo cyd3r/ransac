@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import sys
 import numpy as np
 
 def random_linear2d(slope: float, intercept: float, error: float, width: float):
@@ -26,4 +27,5 @@ def generate(out_path: str, samples: int, linear_ratio: float, slope: float, int
     np.savetxt(out_path, data, delimiter=",")
 
 if __name__ == "__main__":
-    generate("points.csv", 100, .7, .8, 0, .3, np.array([20, 20]))
+    num_samples = int(sys.argv[1])
+    generate("points.csv", num_samples, .7, .8, 0, .3, np.array([20, 20]))
