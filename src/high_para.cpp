@@ -176,7 +176,7 @@ LinearModel ransac(std::vector<Point> data, int maxIter, double thresh, int trai
     double minInlierError[maxIter];
     for (int iter = 0; iter < maxIter; iter++)
     {
-        if (numGood[iter] = 0)
+        if (numGood[iter] == 0)
         {
             minInlierError[iter] = std::numeric_limits<double>::infinity();
             continue;
