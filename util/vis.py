@@ -24,5 +24,7 @@ def show(csv_path: str, slope: float, intercept: float):
     abline(slope, intercept)
     plt.show()
 
+    plt.savefig("vis.jpg")
+
 if __name__ == "__main__":
     show("points.csv", float(sys.argv[1]), float(sys.argv[2]))
