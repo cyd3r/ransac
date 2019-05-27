@@ -143,7 +143,7 @@ LinearModel ransac(std::vector<Point> data, int maxIter, double thresh, int trai
         }
         else
         {
-            // reorder
+            // reorder (put the new inliers first)
             for (int g = 0; g < numGood[iter]; g++)
             {
                 int tmp = indices[iter * dataSize + trainSize + g];
@@ -153,9 +153,10 @@ LinearModel ransac(std::vector<Point> data, int maxIter, double thresh, int trai
         }
     }
 
-    // fit again using the inlier indices
+    // fit again using the new inlier indices
     int numInlierComb = triangMax(dataSize);
-    LinearModel inlierModels[maxIter * numInlierComb];
+    LinearModel *inlierModels = (LinearModel*)malloc(maxIter * numInlierComb * sizeof(LinearModel));
+
     for (int iter = 0; iter < maxIter; iter++)
     {
         if (numGood[iter] == 0)
@@ -210,6 +211,8 @@ LinearModel ransac(std::vector<Point> data, int maxIter, double thresh, int trai
         minInlierError[iter] = minError;
     }
 
+    free(inlierModels);
+
     // find the best model
     LinearModel finalModel;
     double finalError = std::numeric_limits<double>::infinity();
@@ -217,12 +220,12 @@ LinearModel ransac(std::vector<Point> data, int maxIter, double thresh, int trai
     {
         if (minInlierError[iter] < finalError)
         {
-            finalError == minInlierError[iter];
+            finalError = minInlierError[iter];
             finalModel = bestInlierModel[iter];
         }
     }
 
-    std::cout << finalError << std::endl;
+    std::cout << "error: " << finalError << std::endl;
     return finalModel;
 }
 
