@@ -3,13 +3,14 @@
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import numpy as np
+import sys
 
 def abline(slope, intercept):
     x = np.array(plt.gca().get_xlim())
     y = slope * x + intercept
     plt.plot(x, y, '--')
 
-def show(csv_path: str):
+def show(csv_path: str, slope: float, intercept: float):
     data = np.loadtxt(csv_path, delimiter=",")
 
     if data.shape[1] == 3:
@@ -20,8 +21,8 @@ def show(csv_path: str):
         colours = None
 
     plt.scatter(data[:, 0], data[:, 1], color=colours)
-    abline(0.860695, -0.248514)
+    abline(slope, intercept)
     plt.show()
 
 if __name__ == "__main__":
-    show("points.csv")
+    show("points.csv", float(sys.argv[1]), float(sys.argv[2]))
