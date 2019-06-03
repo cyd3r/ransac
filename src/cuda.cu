@@ -57,7 +57,6 @@ __device__ void triangToTuple(int t, int &x, int &y)
 }
 
 __global__ void buildModel(double *data, int dataSize, int *indices, int iter, int numCombinations, struct LinearModel *models)
-// __global__ void buildModel(struct Point *data, int dataSize, int *indices, int iter, int numCombinations, double *slopes, double *intercepts)
 {
     // int t = blockIdx.x * blockDim.x + threadIdx.x;
     int t = threadIdx.x;
@@ -69,19 +68,7 @@ __global__ void buildModel(double *data, int dataSize, int *indices, int iter, i
 
     struct LinearModel m;
     m.slope = (pK[1] - pI[1]) / (pK[0] - pI[0]);
-    // double s = (pK[1] - pI[1]) / (pK[0] - pI[0]);
-    // double x = s;
-    // m.slope = s;
-    // m.intercept = t;
     m.intercept = pI[1] - m.slope * pI[0];
-
-    // m.slope = indices[iter * dataSize + i];
-    // m.intercept = 2 * indices[iter * dataSize + k];
-    // m.slope = data[10];
-    // m.intercept = ;
-
-    // slopes[iter * numCombinations + t] = m.slope;
-    // intercepts[iter * numCombinations + t] = m.intercept;
 
     models[iter * numCombinations + t] = m;
 }
@@ -114,17 +101,6 @@ struct LinearModel ransac(double *data, int dataSize, int maxIter, double thresh
     int *indices = buildIndices(dataSize, maxIter);
     int indicesSize = dataSize * maxIter * sizeof(int);
 
-    for (int iter = 0; iter < maxIter; iter++)
-    {
-        for (int d = 0; d < dataSize; d++)
-        {
-            std::cout << indices[iter * dataSize + d] << ' ';
-        }
-        std::cout << std::endl;
-    }
-
-    std::cout << "data 5x (10): " << data[10] << std::endl;
-
     int *d_indices;
     cudaMalloc(&d_indices, indicesSize);
     cudaMemcpy(d_indices, indices, indicesSize, cudaMemcpyHostToDevice);
@@ -144,30 +120,13 @@ struct LinearModel ransac(double *data, int dataSize, int maxIter, double thresh
     std::cout << "num comb " << numCombinations << std::endl;
     for (int iter = 0; iter < maxIter; iter++)
     {
-        // for (int t = 0; t < numCombinations; t++)
-        // {
-            buildModel<<<1, numCombinations>>>(d_data, dataSize, d_indices, iter, numCombinations, d_candidateModels);
-        // }
+        buildModel<<<1, numCombinations>>>(d_data, dataSize, d_indices, iter, numCombinations, d_candidateModels);
     }
-    // struct LinearModel candidateModels[maxIter * numCombinations];
     struct LinearModel *candidateModels = (struct LinearModel*)malloc(candidateSize);
     cudaMemcpy(candidateModels, d_candidateModels, candidateSize, cudaMemcpyDeviceToHost);
-    for (int iter = 0; iter < maxIter; iter++)
-    {
-        for (int t = 0; t < numCombinations; t++)
-        {
-            struct LinearModel m = candidateModels[iter * numCombinations + t];
-            std::cout << m.slope << " " << m.intercept << std::endl;
-        }
-        // std::cout << "best: " << m.slope << " " << m.intercept << std::endl;
-    }
     cudaFree(d_candidateModels);
 
-    // cudaFree(d_data);
-    // cudaFree(d_indices);
     free(candidateModels);
-
-    // struct LinearModel tmp; tmp.slope = 3; tmp.intercept = 4; return tmp;
 
     // find the best model for each iteration
     struct LinearModel bestCandidateModels[maxIter];
