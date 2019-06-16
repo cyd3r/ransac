@@ -64,34 +64,31 @@ __device__ void triangToTuple(int t, int &x, int &y)
     x = t - (y * (y - 1)) / 2;
 }
 
-__global__ void buildModel(double *data, int dataSize, int *indices, int iter, int numCombinations, struct LinearModel *models)
+__global__ void buildModel(double *data, int *indices, int numCombinations, struct LinearModel *models)
 {
     int t = blockIdx.x * blockDim.x + threadIdx.x;
     int i, k;
     triangToTuple(t, i, k);
 
-    double *pI = &data[2 * indices[iter * dataSize + i]];
-    double *pK = &data[2 * indices[iter * dataSize + k]];
+    double *pI = &data[2 * indices[i]];
+    double *pK = &data[2 * indices[k]];
 
     struct LinearModel m;
     m.slope = (pK[1] - pI[1]) / (pK[0] - pI[0]);
     m.intercept = pI[1] - m.slope * pI[0];
 
-    models[iter * numCombinations + t] = m;
+    models[t] = m;
 }
 
-int checkGood(struct LinearModel *bestIter, double *data, int dataSize, int *indices, int trainSize, double thresh, int iter, int *good)
+int checkGood(struct LinearModel m, double *data, int dataSize, int *indices, int trainSize, double thresh, int *good)
 {
-    struct LinearModel m = bestIter[iter];
     // reduce
-    // int good[dataSize - trainSize];
     int goodSize = 0;
     for (int d = trainSize; d < dataSize; d++)
     {
         struct Point p;
-        p.x = data[2 * indices[iter * dataSize + d]];
-        p.y = data[2 * indices[iter * dataSize + d] + 1];
-        // double dist = distance(m, data[indices[iter * dataSize + d]]);
+        p.x = data[2 * indices[d]];
+        p.y = data[2 * indices[d] + 1];
         double dist = distance(m, p);
         if (dist < thresh)
         {
@@ -103,14 +100,37 @@ int checkGood(struct LinearModel *bestIter, double *data, int dataSize, int *ind
     return goodSize;
 }
 
-struct LinearModel ransac(double *data, int dataSize, int maxIter, double thresh, int trainSize, int wellCount)
+struct LinearModel findBest(int trainSize, struct LinearModel *candidates, int candidatesSize, double *data, int *indices)
 {
-    int *indices = buildIndices(dataSize, maxIter);
-    int indicesSize = dataSize * maxIter * sizeof(int);
+    struct LinearModel bestModel;
+    bestModel.error = std::numeric_limits<double>::infinity();
+    // reduce
+    for (int t = 0; t < candidatesSize; t++)
+    {
+        struct LinearModel m = candidates[t];
+        double sum = 0;
+        // reduce
+        for (int d = 0; d < trainSize; d++)
+        {
+            struct Point p;
+            p.x = data[2 * indices[d]];
+            p.y = data[2 * indices[d] + 1];
+            double dist = distance(m, p);
+            sum += dist * dist;
+        }
+        // mean squarred error
+        m.error = sum / trainSize;
 
+        bestModel = minModel(m, bestModel);
+    }
+    return bestModel;
+}
+
+struct LinearModel singleIter(int iter, int *indices, double *data, int dataSize, double thresh, int trainSize, int wellCount)
+{
     int *d_indices;
-    cudaMalloc(&d_indices, indicesSize);
-    cudaMemcpy(d_indices, indices, indicesSize, cudaMemcpyHostToDevice);
+    cudaMalloc(&d_indices, dataSize * sizeof(int));
+    cudaMemcpy(d_indices, indices, dataSize * sizeof(int), cudaMemcpyHostToDevice);
 
     double *d_data;
     cudaMalloc(&d_data, 2 * dataSize * sizeof(double));
@@ -124,154 +144,88 @@ struct LinearModel ransac(double *data, int dataSize, int maxIter, double thresh
     // ignore some combinations OR fill them up with duplicates
     numCombinations = numBlocks * threadsPerBlock;
 
+    
     // produce every possible model
-    int candidateSize = maxIter * numCombinations * sizeof(struct LinearModel);
+    int candidateSize = numCombinations * sizeof(struct LinearModel);
     struct LinearModel *d_candidateModels;
     cudaMalloc(&d_candidateModels, candidateSize);
     
-    std::cout << "num comb " << numCombinations << std::endl;
-    for (int iter = 0; iter < maxIter; iter++)
-    {
-        buildModel<<<numBlocks, threadsPerBlock>>>(d_data, dataSize, d_indices, iter, numCombinations, d_candidateModels);
-    }
+    buildModel<<<numBlocks, threadsPerBlock>>>(d_data, d_indices, numCombinations, d_candidateModels);
     struct LinearModel *candidateModels = (struct LinearModel*)malloc(candidateSize);
     cudaMemcpy(candidateModels, d_candidateModels, candidateSize, cudaMemcpyDeviceToHost);
     cudaFree(d_candidateModels);
 
-    // find the best model for each iteration
-    struct LinearModel bestCandidateModels[maxIter];
-    for (int iter = 0; iter < maxIter; iter++)
-    {
-        struct LinearModel bestModel;
-        bestModel.error = std::numeric_limits<double>::infinity();
-        // reduce
-        for (int t = 0; t < numCombinations; t++)
-        {
-            int i, k;
-            tuple_triang(t, i, k);
-            struct LinearModel m = candidateModels[iter * numCombinations + t];
-            double sum = 0;
-            // reduce
-            for (int d = 0; d < trainSize; d++)
-            {
-                struct Point p;
-                p.x = data[2 * indices[iter * dataSize + d]];
-                p.y = data[2 * indices[iter * dataSize + d] + 1];
-                // double dist = distance(m, data[indices[iter * dataSize + d]]);
-                double dist = distance(m, p);
-                sum += dist * dist;
-            }
-            // mean squarred error
-            m.error = sum / trainSize;
-
-            bestModel = minModel(m, bestModel);
-        }
-        bestCandidateModels[iter] = bestModel;
-    }
+    struct LinearModel bestModel = findBest(trainSize, candidateModels, numCombinations, data, indices);
 
     free(candidateModels);
 
     // evaluate the models
-    int numGood[maxIter];
+    int numGood;
     int tmpInlierIndices[dataSize - trainSize];
-    for (int iter = 0; iter < maxIter; iter++)
+    numGood = checkGood(bestModel, data, dataSize, indices, trainSize, thresh, tmpInlierIndices);
+    if (numGood < wellCount)
     {
-        numGood[iter] = checkGood(bestCandidateModels, data, dataSize, indices, trainSize, thresh, iter, tmpInlierIndices);
-        if (numGood[iter] < wellCount)
+        struct LinearModel fail;
+        fail.slope = 0;
+        fail.intercept = 0;
+        fail.error = std::numeric_limits<double>::infinity();
+        return fail;
+    }
+    else
+    {
+        // reorder (put the new inliers first)
+        for (int g = 0; g < numGood; g++)
         {
-            numGood[iter] = 0;
-        }
-        else
-        {
-            // reorder (put the new inliers first)
-            for (int g = 0; g < numGood[iter]; g++)
-            {
-                int tmp = indices[iter * dataSize + trainSize + g];
-                indices[iter * dataSize + trainSize + g] = indices[iter * dataSize + tmpInlierIndices[g]];
-                indices[iter * dataSize + tmpInlierIndices[g]] = tmp;
-            }
+            int tmp = indices[trainSize + g];
+            indices[trainSize + g] = indices[tmpInlierIndices[g]];
+            indices[tmpInlierIndices[g]] = tmp;
         }
     }
+
+    int numTrainAndGood = trainSize + numGood;
+    int numInlierComb = triangMax(numTrainAndGood);
 
     // fit again using the new inlier indices
-    int numInlierComb = triangMax(dataSize);
     numBlocks = numInlierComb / threadsPerBlock;
     numInlierComb = numBlocks * threadsPerBlock;
-    struct LinearModel *inlierModels = (struct LinearModel*)malloc(maxIter * numInlierComb * sizeof(struct LinearModel));
+    struct LinearModel *inlierModels = (struct LinearModel*)malloc(numInlierComb * sizeof(struct LinearModel));
     struct LinearModel *d_inlierModels;
-    cudaMalloc(&d_inlierModels, maxIter * numInlierComb * sizeof(inlierModels[0]));
+    cudaMalloc(&d_inlierModels, numInlierComb * sizeof(inlierModels[0]));
 
-    for (int iter = 0; iter < maxIter; iter++)
-    {
-        // maybe remove this statement (diverging branches)
-        if (numGood[iter] == 0)
-            continue;
+    buildModel<<<numBlocks, threadsPerBlock>>>(d_data, d_indices, numInlierComb, d_inlierModels);
 
-        // right now, computations are done that are not required lateron
-        buildModel<<<numBlocks, threadsPerBlock>>>(d_data, dataSize, d_indices, iter, numInlierComb, d_inlierModels);
-    }
-
-    cudaMemcpy(inlierModels, d_inlierModels, maxIter * numInlierComb * sizeof(inlierModels[0]), cudaMemcpyDeviceToHost);
+    cudaMemcpy(inlierModels, d_inlierModels, numInlierComb * sizeof(inlierModels[0]), cudaMemcpyDeviceToHost);
     cudaFree(d_inlierModels);
 
-    // find the best model for each iteration
-    struct LinearModel bestInlierModel[maxIter];
-    for (int iter = 0; iter < maxIter; iter++)
-    {
-        if (numGood[iter] == 0)
-        {
-            bestInlierModel[iter].error = std::numeric_limits<double>::infinity();
-            continue;
-        }
-        struct LinearModel bestModel;
-        bestModel.error = std::numeric_limits<double>::infinity();
-        // reduce
-        int numTrainAndGood = trainSize + numGood[iter];
-        int numComb = triangMax(numTrainAndGood);
-        for (int t = 0; t < numComb; t++)
-        {
-            int i, k;
-            tuple_triang(t, i, k);
-            struct LinearModel m = inlierModels[iter * numInlierComb + t];
-
-            double sum = 0;
-            // reduce
-            for (int d = 0; d < numTrainAndGood; d++)
-            {
-                struct Point p;
-                p.x = data[2 * indices[iter * dataSize + d]];
-                p.y = data[2 * indices[iter * dataSize + d] + 1];
-                // double dist = distance(m, data[indices[iter * dataSize + d]]);
-                double dist = distance(m, p);
-                sum += dist * dist;
-            }
-            m.error = sum / numTrainAndGood;
-
-            bestModel = minModel(m, bestModel);
-        }
-        bestInlierModel[iter] = bestModel;
-    }
+    bestModel = findBest(numTrainAndGood, inlierModels, numInlierComb, data, indices);
 
     free(inlierModels);
-
-    // find the best model
-    struct LinearModel finalModel;
-    finalModel.error = std::numeric_limits<double>::infinity();
-    for (int iter = 0; iter < maxIter; iter++)
-    {
-        finalModel = minModel(bestInlierModel[iter], finalModel);
-    }
 
     cudaFree(d_data);
     cudaFree(d_indices);
 
-    std::cout << "error: " << finalModel.error << std::endl;
+    return bestModel;
+}
 
-    if (finalModel.error == std::numeric_limits<double>::infinity())
+struct LinearModel ransac(double *data, int dataSize, int maxIter, double thresh, int trainSize, int wellCount)
+{
+    int *indices = buildIndices(dataSize, maxIter);
+
+    struct LinearModel best;
+    best.error = std::numeric_limits<double>::infinity();
+    for (int iter = 0; iter < maxIter; iter++)
+    {
+        struct LinearModel m = singleIter(iter, &indices[iter * dataSize], data, dataSize, thresh, trainSize, wellCount);
+        std::cout << iter << " " << m.slope << " " << m.intercept << " " << m.error << std::endl;
+        best = minModel(m, best);
+    }
+    std::cout << "error: " << best.error << std::endl;
+
+    if (best.error == std::numeric_limits<double>::infinity())
     {
         std::cerr << "RANSAC failed" << std::endl;
     }
-    return finalModel;
+    return best;
 }
 
 std::vector<double> readCSV(const char *path)
