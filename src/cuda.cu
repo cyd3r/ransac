@@ -6,6 +6,8 @@
 
 #include "index.h"
 
+// TODO: use thrust for reduction
+
 struct Point
 {
     double x;
@@ -58,8 +60,7 @@ __device__ void triangToTuple(int t, int &x, int &y)
 
 __global__ void buildModel(double *data, int dataSize, int *indices, int iter, int numCombinations, struct LinearModel *models)
 {
-    // int t = blockIdx.x * blockDim.x + threadIdx.x;
-    int t = threadIdx.x;
+    int t = blockIdx.x * blockDim.x + threadIdx.x;
     int i, k;
     triangToTuple(t, i, k);
 
@@ -112,6 +113,11 @@ struct LinearModel ransac(double *data, int dataSize, int maxIter, double thresh
     // the number of unique combinations of all data points
     int numCombinations = triangMax(trainSize);
 
+    int threadsPerBlock = 32;
+    int numBlocks = numCombinations / threadsPerBlock;
+    // ignore some combinations OR fill them up with duplicates
+    numCombinations = numBlocks * threadsPerBlock;
+
     // produce every possible model
     int candidateSize = maxIter * numCombinations * sizeof(struct LinearModel);
     struct LinearModel *d_candidateModels;
@@ -120,13 +126,11 @@ struct LinearModel ransac(double *data, int dataSize, int maxIter, double thresh
     std::cout << "num comb " << numCombinations << std::endl;
     for (int iter = 0; iter < maxIter; iter++)
     {
-        buildModel<<<1, numCombinations>>>(d_data, dataSize, d_indices, iter, numCombinations, d_candidateModels);
+        buildModel<<<numBlocks, threadsPerBlock>>>(d_data, dataSize, d_indices, iter, numCombinations, d_candidateModels);
     }
     struct LinearModel *candidateModels = (struct LinearModel*)malloc(candidateSize);
     cudaMemcpy(candidateModels, d_candidateModels, candidateSize, cudaMemcpyDeviceToHost);
     cudaFree(d_candidateModels);
-
-    free(candidateModels);
 
     // find the best model for each iteration
     struct LinearModel bestCandidateModels[maxIter];
@@ -162,6 +166,10 @@ struct LinearModel ransac(double *data, int dataSize, int maxIter, double thresh
         bestCandidateModels[iter] = bestModel;
     }
 
+    // struct LinearModel fm;
+    // fm.slope = candidateModels[0].slope;
+    // fm.intercept = candidateModels[0].intercept;
+
     free(candidateModels);
 
     // evaluate the models
@@ -188,20 +196,19 @@ struct LinearModel ransac(double *data, int dataSize, int maxIter, double thresh
 
     // fit again using the new inlier indices
     int numInlierComb = triangMax(dataSize);
+    numBlocks = numInlierComb / threadsPerBlock;
+    numInlierComb = numBlocks * threadsPerBlock;
     struct LinearModel *inlierModels = (struct LinearModel*)malloc(maxIter * numInlierComb * sizeof(struct LinearModel));
     struct LinearModel *d_inlierModels;
     cudaMalloc(&d_inlierModels, maxIter * numInlierComb * sizeof(inlierModels[0]));
 
     for (int iter = 0; iter < maxIter; iter++)
     {
+        // maybe remove this statement (diverging branches)
         if (numGood[iter] == 0)
             continue;
 
-        int numComb = triangMax(trainSize + numGood[iter]);
-        for (int t = 0; t < numComb; t++)
-        {
-            buildModel<<<1, numComb>>>(d_data, dataSize, d_indices, iter, numComb, d_inlierModels);
-        }
+        buildModel<<<numBlocks, threadsPerBlock>>>(d_data, dataSize, d_indices, iter, numInlierComb, d_inlierModels);
     }
 
     cudaMemcpy(inlierModels, d_inlierModels, maxIter * numInlierComb * sizeof(inlierModels[0]), cudaMemcpyDeviceToHost);
@@ -263,6 +270,8 @@ struct LinearModel ransac(double *data, int dataSize, int maxIter, double thresh
             finalError = minInlierError[iter];
             finalModel = bestInlierModel[iter];
         }
+
+        std::cout << bestInlierModel[iter].slope << " " << bestInlierModel[iter].intercept << ", error: " << minInlierError[iter] << std::endl;
     }
 
     cudaFree(d_data);
@@ -275,6 +284,7 @@ struct LinearModel ransac(double *data, int dataSize, int maxIter, double thresh
         std::cerr << "RANSAC failed" << std::endl;
     }
     return finalModel;
+    // return fm;
 }
 
 std::vector<double> readCSV(const char *path)
@@ -303,7 +313,7 @@ int main(int argc, char const *argv[])
     int dataSize = data.size() / 2;
 
     clock_t t0 = clock();
-    const int numIters = 4;
+    const int numIters = 8;
     float trainRatio = .3f;
     float wellRatio = .1f;
     double errorThresh = .3;
