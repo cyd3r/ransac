@@ -18,7 +18,13 @@ struct LinearModel
 {
     double slope;
     double intercept;
+    double error;
 };
+
+struct LinearModel minModel(struct LinearModel a, struct LinearModel b)
+{
+    return a.error < b.error ? a : b;
+}
 
 double distance(struct LinearModel model, struct Point p)
 {
@@ -136,8 +142,8 @@ struct LinearModel ransac(double *data, int dataSize, int maxIter, double thresh
     struct LinearModel bestCandidateModels[maxIter];
     for (int iter = 0; iter < maxIter; iter++)
     {
-        double minError = std::numeric_limits<double>::infinity();
         struct LinearModel bestModel;
+        bestModel.error = std::numeric_limits<double>::infinity();
         // reduce
         for (int t = 0; t < numCombinations; t++)
         {
@@ -155,20 +161,13 @@ struct LinearModel ransac(double *data, int dataSize, int maxIter, double thresh
                 double dist = distance(m, p);
                 sum += dist * dist;
             }
-            double error = sum / trainSize;
+            // mean squarred error
+            m.error = sum / trainSize;
 
-            if (error < minError)
-            {
-                minError = error;
-                bestModel = m;
-            }
+            bestModel = minModel(m, bestModel);
         }
         bestCandidateModels[iter] = bestModel;
     }
-
-    // struct LinearModel fm;
-    // fm.slope = candidateModels[0].slope;
-    // fm.intercept = candidateModels[0].intercept;
 
     free(candidateModels);
 
@@ -216,16 +215,15 @@ struct LinearModel ransac(double *data, int dataSize, int maxIter, double thresh
 
     // find the best model for each iteration
     struct LinearModel bestInlierModel[maxIter];
-    double minInlierError[maxIter];
     for (int iter = 0; iter < maxIter; iter++)
     {
         if (numGood[iter] == 0)
         {
-            minInlierError[iter] = std::numeric_limits<double>::infinity();
+            bestInlierModel[iter].error = std::numeric_limits<double>::infinity();
             continue;
         }
-        double minError = std::numeric_limits<double>::infinity();
         struct LinearModel bestModel;
+        bestModel.error = std::numeric_limits<double>::infinity();
         // reduce
         int numTrainAndGood = trainSize + numGood[iter];
         int numComb = triangMax(numTrainAndGood);
@@ -246,45 +244,33 @@ struct LinearModel ransac(double *data, int dataSize, int maxIter, double thresh
                 double dist = distance(m, p);
                 sum += dist * dist;
             }
-            double error = sum / numTrainAndGood;
+            m.error = sum / numTrainAndGood;
 
-            if (error < minError)
-            {
-                minError = error;
-                bestModel = m;
-            }
+            bestModel = minModel(m, bestModel);
         }
         bestInlierModel[iter] = bestModel;
-        minInlierError[iter] = minError;
     }
 
     free(inlierModels);
 
     // find the best model
     struct LinearModel finalModel;
-    double finalError = std::numeric_limits<double>::infinity();
+    finalModel.error = std::numeric_limits<double>::infinity();
     for (int iter = 0; iter < maxIter; iter++)
     {
-        if (minInlierError[iter] < finalError)
-        {
-            finalError = minInlierError[iter];
-            finalModel = bestInlierModel[iter];
-        }
-
-        std::cout << bestInlierModel[iter].slope << " " << bestInlierModel[iter].intercept << ", error: " << minInlierError[iter] << std::endl;
+        finalModel = minModel(bestInlierModel[iter], finalModel);
     }
 
     cudaFree(d_data);
     cudaFree(d_indices);
 
-    std::cout << "error: " << finalError << std::endl;
+    std::cout << "error: " << finalModel.error << std::endl;
 
-    if (finalError == std::numeric_limits<double>::infinity())
+    if (finalModel.error == std::numeric_limits<double>::infinity())
     {
         std::cerr << "RANSAC failed" << std::endl;
     }
     return finalModel;
-    // return fm;
 }
 
 std::vector<double> readCSV(const char *path)
