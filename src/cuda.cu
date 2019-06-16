@@ -207,6 +207,7 @@ struct LinearModel ransac(double *data, int dataSize, int maxIter, double thresh
         if (numGood[iter] == 0)
             continue;
 
+        // right now, computations are done that are not required lateron
         buildModel<<<numBlocks, threadsPerBlock>>>(d_data, dataSize, d_indices, iter, numInlierComb, d_inlierModels);
     }
 
@@ -299,7 +300,7 @@ int main(int argc, char const *argv[])
     int dataSize = data.size() / 2;
 
     clock_t t0 = clock();
-    const int numIters = 8;
+    const int numIters = 20;
     float trainRatio = .3f;
     float wellRatio = .1f;
     double errorThresh = .3;
@@ -309,5 +310,15 @@ int main(int argc, char const *argv[])
 
     std::cout << "Best Model (slope, intercept): " << m.slope << " " << m.intercept << std::endl;
     std::cout << "Time taken: " << elapsed_secs << "s" << std::endl;
+
+    // write the results to a file for visualisation
+    FILE *f = fopen("results.txt", "w");
+    if (f == NULL)
+    {
+        printf("Error opening file!\n");
+        exit(1);
+    }
+    fprintf(f, "%f %f %f\n", m.slope, m.intercept, m.error);
+    fclose(f);
     return 0;
 }

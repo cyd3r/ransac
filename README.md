@@ -14,6 +14,12 @@ python3 util/generate.py
 
 # compile the RANSAC implementation
 g++ src/main.cpp
+./cu_build.sh
+
 # and run it!
 ./a.out
+./cuda.out
+
+# visualisation
+python3 util/vis.py
 ```
