@@ -9,6 +9,13 @@
 
 #include "index.h"
 
+double3 getInfModel()
+{
+    double3 m;
+    m.z = std::numeric_limits<double>::infinity();
+    return m;
+}
+
 struct dist_functor {
     double slope = 0;
     double intercept = 0;
@@ -23,6 +30,15 @@ struct dist_functor {
     {
         double dist = std::abs(slope * p.x - p.y + intercept) / std::sqrt(slope * slope + 1);
         return dist * dist;
+    }
+};
+
+struct min_model
+{
+    __host__ __device__
+    double3 operator()(const double3 &a, const double3 &b) const
+    {
+        return a.z < b.z ? a : b;
     }
 };
 
@@ -43,14 +59,15 @@ double distance(struct LinearModel model, double2 p)
     return std::abs(model.slope * p.x - p.y + model.intercept) / std::sqrt(model.slope * model.slope + 1);
 }
 
-void shuffle(int *arr, int size)
+template<class T>
+void shuffle(T *arr, int size)
 {
     // Fisher Yates Shuffle
     // https://en.wikipedia.org/wiki/Fisher%E2%80%93Yates_shuffle
     for (int i = size - 1; i > 0; i--) 
     { 
         int j = rand() % (i + 1); 
-        int tmp = arr[i];
+        T tmp = arr[i];
         arr[i] = arr[j];
         arr[j] = tmp;
     }
@@ -76,14 +93,14 @@ __device__ void triangToTuple(int t, int &x, int &y)
     x = t - (y * (y - 1)) / 2;
 }
 
-__global__ void buildModel(double2 *data, int *indices, int numCombinations, struct LinearModel *models)
+__global__ void buildModel(double2 *data, int numCombinations, struct LinearModel *models)
 {
     int t = blockIdx.x * blockDim.x + threadIdx.x;
     int i, k;
     triangToTuple(t, i, k);
 
-    double2 pI = data[indices[i]];
-    double2 pK = data[indices[k]];
+    double2 pI = data[i];
+    double2 pK = data[k];
 
     struct LinearModel m;
     m.slope = (pK.y - pI.y) / (pK.x - pI.x);
@@ -92,13 +109,13 @@ __global__ void buildModel(double2 *data, int *indices, int numCombinations, str
     models[t] = m;
 }
 
-int checkGood(struct LinearModel m, double2 *data, int dataSize, int *indices, int trainSize, double thresh, int *good)
+int checkGood(struct LinearModel m, double2 *data, int dataSize, int trainSize, double thresh, int *good)
 {
     // reduce
     int goodSize = 0;
     for (int d = trainSize; d < dataSize; d++)
     {
-        double2 p = data[indices[d]];
+        double2 p = data[d];
         double dist = distance(m, p);
         if (dist < thresh)
         {
@@ -110,10 +127,9 @@ int checkGood(struct LinearModel m, double2 *data, int dataSize, int *indices, i
     return goodSize;
 }
 
-struct LinearModel findBest(int trainSize, struct LinearModel *candidates, int candidatesSize, double2 *data, int *indices)
+struct LinearModel findBest(int trainSize, struct LinearModel *candidates, int candidatesSize, double2 *data)
 {
-    struct LinearModel bestModel;
-    bestModel.error = std::numeric_limits<double>::infinity();
+    double3 cs[candidatesSize];
 
     // reduce
     for (int t = 0; t < candidatesSize; t++)
@@ -121,29 +137,31 @@ struct LinearModel findBest(int trainSize, struct LinearModel *candidates, int c
         struct LinearModel m = candidates[t];
         struct dist_functor dist_op = dist_functor(m.slope, m.intercept);
         thrust::plus<double> add_op;
-        double2 dataPoints[trainSize];
-        for (int i = 0; i < trainSize; i++)
-        {
-            dataPoints[i] = data[indices[i]];
-        }
-        double sum = thrust::transform_reduce(dataPoints, dataPoints + trainSize, dist_op, 0.0, add_op);
+        double sum = thrust::transform_reduce(data, data + trainSize, dist_op, 0.0, add_op);
         // mean squarred error
-        m.error = sum / trainSize;
-        candidates[t] = m;
+        cs[t].x = m.slope;
+        cs[t].y = m.intercept;
+        cs[t].z = sum / trainSize;
     }
-    for (int t = 0; t < candidatesSize; t++)
-    {
-        bestModel = minModel(candidates[t], bestModel);
-    }
-    return bestModel;
+
+    struct min_model min_op;
+    double3 bestM = thrust::reduce(cs, cs + candidatesSize, getInfModel(), min_op);
+    struct LinearModel m;
+    m.slope = bestM.x;
+    m.intercept = bestM.y;
+    m.error = bestM.z;
+    return m;
 }
 
-struct LinearModel singleIter(int iter, int *indices, double2 *data, int dataSize, double thresh, int trainSize, int wellCount)
+struct LinearModel singleIter(int iter, double2 *rawData, int dataSize, double thresh, int trainSize, int wellCount)
 {
-    int *d_indices;
-    cudaMalloc(&d_indices, dataSize * sizeof(int));
-    cudaMemcpy(d_indices, indices, dataSize * sizeof(int), cudaMemcpyHostToDevice);
-
+    // create a copy of the data (maybe not needed in the future)
+    double2 data[dataSize];
+    for (int i = 0; i < dataSize; i++)
+    {
+        data[i] = rawData[i];
+    }
+    shuffle(data, dataSize);
     double2 *d_data;
     cudaMalloc(&d_data, dataSize * sizeof(double2));
     cudaMemcpy(d_data, data, dataSize * sizeof(double2), cudaMemcpyHostToDevice);
@@ -161,19 +179,19 @@ struct LinearModel singleIter(int iter, int *indices, double2 *data, int dataSiz
     struct LinearModel *d_candidateModels;
     cudaMalloc(&d_candidateModels, candidateSize);
     
-    buildModel<<<numBlocks, threadsPerBlock>>>(d_data, d_indices, numCombinations, d_candidateModels);
+    buildModel<<<numBlocks, threadsPerBlock>>>(d_data, numCombinations, d_candidateModels);
     struct LinearModel *candidateModels = (struct LinearModel*)malloc(candidateSize);
     cudaMemcpy(candidateModels, d_candidateModels, candidateSize, cudaMemcpyDeviceToHost);
     cudaFree(d_candidateModels);
 
-    struct LinearModel bestModel = findBest(trainSize, candidateModels, numCombinations, data, indices);
+    struct LinearModel bestModel = findBest(trainSize, candidateModels, numCombinations, data);
 
     free(candidateModels);
 
     // evaluate the models
     int numGood;
     int tmpInlierIndices[dataSize - trainSize];
-    numGood = checkGood(bestModel, data, dataSize, indices, trainSize, thresh, tmpInlierIndices);
+    numGood = checkGood(bestModel, data, dataSize, trainSize, thresh, tmpInlierIndices);
     if (numGood < wellCount)
     {
         struct LinearModel fail;
@@ -187,9 +205,9 @@ struct LinearModel singleIter(int iter, int *indices, double2 *data, int dataSiz
         // reorder (put the new inliers first)
         for (int g = 0; g < numGood; g++)
         {
-            int tmp = indices[trainSize + g];
-            indices[trainSize + g] = indices[tmpInlierIndices[g]];
-            indices[tmpInlierIndices[g]] = tmp;
+            double2 tmp = data[trainSize + g];
+            data[trainSize + g] = data[tmpInlierIndices[g]];
+            data[tmpInlierIndices[g]] = tmp;
         }
     }
 
@@ -203,30 +221,27 @@ struct LinearModel singleIter(int iter, int *indices, double2 *data, int dataSiz
     struct LinearModel *d_inlierModels;
     cudaMalloc(&d_inlierModels, numInlierComb * sizeof(inlierModels[0]));
 
-    buildModel<<<numBlocks, threadsPerBlock>>>(d_data, d_indices, numInlierComb, d_inlierModels);
+    buildModel<<<numBlocks, threadsPerBlock>>>(d_data, numInlierComb, d_inlierModels);
 
     cudaMemcpy(inlierModels, d_inlierModels, numInlierComb * sizeof(inlierModels[0]), cudaMemcpyDeviceToHost);
     cudaFree(d_inlierModels);
 
-    bestModel = findBest(numTrainAndGood, inlierModels, numInlierComb, data, indices);
+    bestModel = findBest(numTrainAndGood, inlierModels, numInlierComb, data);
 
     free(inlierModels);
 
     cudaFree(d_data);
-    cudaFree(d_indices);
 
     return bestModel;
 }
 
 struct LinearModel ransac(double2 *data, int dataSize, int maxIter, double thresh, int trainSize, int wellCount)
 {
-    int *indices = buildIndices(dataSize, maxIter);
-
     struct LinearModel best;
     best.error = std::numeric_limits<double>::infinity();
     for (int iter = 0; iter < maxIter; iter++)
     {
-        struct LinearModel m = singleIter(iter, &indices[iter * dataSize], data, dataSize, thresh, trainSize, wellCount);
+        struct LinearModel m = singleIter(iter, data, dataSize, thresh, trainSize, wellCount);
         std::cout << iter << " " << m.slope << " " << m.intercept << " " << m.error << std::endl;
         best = minModel(m, best);
     }
