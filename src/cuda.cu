@@ -26,8 +26,6 @@ struct dist_functor {
     }
 };
 
-// TODO: use thrust for reduction
-
 struct LinearModel
 {
     double slope;
@@ -78,59 +76,29 @@ __device__ void triangToTuple(int t, int &x, int &y)
     x = t - (y * (y - 1)) / 2;
 }
 
-__global__ void buildModel(double *data, int *indices, int numCombinations, struct LinearModel *models)
+__global__ void buildModel(double2 *data, int *indices, int numCombinations, struct LinearModel *models)
 {
     int t = blockIdx.x * blockDim.x + threadIdx.x;
     int i, k;
     triangToTuple(t, i, k);
 
-    double *pI = &data[2 * indices[i]];
-    double *pK = &data[2 * indices[k]];
+    double2 pI = data[indices[i]];
+    double2 pK = data[indices[k]];
 
     struct LinearModel m;
-    m.slope = (pK[1] - pI[1]) / (pK[0] - pI[0]);
-    m.intercept = pI[1] - m.slope * pI[0];
+    m.slope = (pK.y - pI.y) / (pK.x - pI.x);
+    m.intercept = pI.y - m.slope * pI.x;
 
     models[t] = m;
 }
 
-// __global__ void distances(struct LinearModel model, double *data, int *indices, int trainSize)
-// {
-//     double2 p;
-//     p.x = data[2 * indices[d]];
-//     p.y = data[2 * indices[d] + 1];
-//     // double dist = distance(candidates[t], p);
-//     double dist = std::abs(candidates[t].slope * p.x - p.y + candidates[t].intercept) / std::sqrt(candidates[t].slope * candidates[t].slope + 1);
-// }
-
-__global__ void modelDistance(struct LinearModel *candidates, double *data, int *indices, int trainSize)
-{
-    int t = blockIdx.x * blockDim.x + threadIdx.x;
-    double sum = 0;
-    // reduce            double dist = std::abs(m.slope * p.x - p.y + m.intercept) / std::sqrt(m.slope * m.slope + 1);
-
-    for (int d = 0; d < trainSize; d++)
-    {
-        double2 p;
-        p.x = data[2 * indices[d]];
-        p.y = data[2 * indices[d] + 1];
-        // double dist = distance(candidates[t], p);
-        double dist = std::abs(candidates[t].slope * p.x - p.y + candidates[t].intercept) / std::sqrt(candidates[t].slope * candidates[t].slope + 1);
-        sum += dist * dist;
-    }
-    // mean squarred error
-    candidates[t].error = sum / trainSize;
-}
-
-int checkGood(struct LinearModel m, double *data, int dataSize, int *indices, int trainSize, double thresh, int *good)
+int checkGood(struct LinearModel m, double2 *data, int dataSize, int *indices, int trainSize, double thresh, int *good)
 {
     // reduce
     int goodSize = 0;
     for (int d = trainSize; d < dataSize; d++)
     {
-        double2 p;
-        p.x = data[2 * indices[d]];
-        p.y = data[2 * indices[d] + 1];
+        double2 p = data[indices[d]];
         double dist = distance(m, p);
         if (dist < thresh)
         {
@@ -142,12 +110,10 @@ int checkGood(struct LinearModel m, double *data, int dataSize, int *indices, in
     return goodSize;
 }
 
-struct LinearModel findBest(int trainSize, struct LinearModel *candidates, int candidatesSize, double *data, int *indices)
+struct LinearModel findBest(int trainSize, struct LinearModel *candidates, int candidatesSize, double2 *data, int *indices)
 {
     struct LinearModel bestModel;
     bestModel.error = std::numeric_limits<double>::infinity();
-
-    // modelDistance<<<,>>>(candidates, data, indices, trainSize);
 
     // reduce
     for (int t = 0; t < candidatesSize; t++)
@@ -158,8 +124,7 @@ struct LinearModel findBest(int trainSize, struct LinearModel *candidates, int c
         double2 dataPoints[trainSize];
         for (int i = 0; i < trainSize; i++)
         {
-            dataPoints[i].x = data[2 * indices[i]];
-            dataPoints[i].y = data[2 * indices[i] + 1];
+            dataPoints[i] = data[indices[i]];
         }
         double sum = thrust::transform_reduce(dataPoints, dataPoints + trainSize, dist_op, 0.0, add_op);
         // mean squarred error
@@ -170,37 +135,18 @@ struct LinearModel findBest(int trainSize, struct LinearModel *candidates, int c
     {
         bestModel = minModel(candidates[t], bestModel);
     }
-
-    // for (int t = 0; t < candidatesSize; t++)
-    // {
-    //     struct LinearModel m = candidates[t];
-    //     double sum = 0;
-    //     // reduce
-    //     for (int d = 0; d < trainSize; d++)
-    //     {
-    //         double2 p;
-    //         p.x = data[2 * indices[d]];
-    //         p.y = data[2 * indices[d] + 1];
-    //         double dist = distance(m, p);
-    //         sum += dist * dist;
-    //     }
-    //     // mean squarred error
-    //     m.error = sum / trainSize;
-
-    //     bestModel = minModel(m, bestModel);
-    // }
     return bestModel;
 }
 
-struct LinearModel singleIter(int iter, int *indices, double *data, int dataSize, double thresh, int trainSize, int wellCount)
+struct LinearModel singleIter(int iter, int *indices, double2 *data, int dataSize, double thresh, int trainSize, int wellCount)
 {
     int *d_indices;
     cudaMalloc(&d_indices, dataSize * sizeof(int));
     cudaMemcpy(d_indices, indices, dataSize * sizeof(int), cudaMemcpyHostToDevice);
 
-    double *d_data;
-    cudaMalloc(&d_data, 2 * dataSize * sizeof(double));
-    cudaMemcpy(d_data, data, 2 * dataSize * sizeof(double), cudaMemcpyHostToDevice);
+    double2 *d_data;
+    cudaMalloc(&d_data, dataSize * sizeof(double2));
+    cudaMemcpy(d_data, data, dataSize * sizeof(double2), cudaMemcpyHostToDevice);
 
     // the number of unique combinations of all data points
     int numCombinations = triangMax(trainSize);
@@ -272,7 +218,7 @@ struct LinearModel singleIter(int iter, int *indices, double *data, int dataSize
     return bestModel;
 }
 
-struct LinearModel ransac(double *data, int dataSize, int maxIter, double thresh, int trainSize, int wellCount)
+struct LinearModel ransac(double2 *data, int dataSize, int maxIter, double thresh, int trainSize, int wellCount)
 {
     int *indices = buildIndices(dataSize, maxIter);
 
@@ -293,18 +239,17 @@ struct LinearModel ransac(double *data, int dataSize, int maxIter, double thresh
     return best;
 }
 
-std::vector<double> readCSV(const char *path)
+std::vector<double2> readCSV(const char *path)
 {
     std::ifstream file(path);
-    std::vector<double> data;
+    std::vector<double2> data;
 
     std::string line;
     while (getline(file, line))
     {
-        double x, y;
-        sscanf(line.c_str(), "%lf,%lf", &x, &y);
-        data.push_back(x);
-        data.push_back(y);
+        double2 p;
+        sscanf(line.c_str(), "%lf,%lf", &p.x, &p.y);
+        data.push_back(p);
     }
     file.close();
 
@@ -315,8 +260,8 @@ int main(int argc, char const *argv[])
 {
     // srand(time(NULL));
     srand(420);
-    std::vector<double> data = readCSV("points.csv");
-    int dataSize = data.size() / 2;
+    std::vector<double2> data = readCSV("points.csv");
+    int dataSize = data.size();
 
     clock_t t0 = clock();
     const int numIters = 20;
