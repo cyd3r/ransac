@@ -3,16 +3,30 @@
 #include <iostream>
 #include <fstream>
 #include <cmath>
+#include <thrust/reduce.h>
+#include <thrust/transform.h>
+#include <thrust/functional.h>
 
 #include "index.h"
 
-// TODO: use thrust for reduction
+struct dist_functor {
+    double slope = 0;
+    double intercept = 0;
+    dist_functor(const double _slope, const double _intercept)
+    {
+        slope = _slope;
+        intercept = _intercept;
+    }
 
-struct Point
-{
-    double x;
-    double y;
+    __host__ __device__
+    double operator()(const double2 &p) const
+    {
+        double dist = std::abs(slope * p.x - p.y + intercept) / std::sqrt(slope * slope + 1);
+        return dist * dist;
+    }
 };
+
+// TODO: use thrust for reduction
 
 struct LinearModel
 {
@@ -26,7 +40,7 @@ struct LinearModel minModel(struct LinearModel a, struct LinearModel b)
     return a.error < b.error ? a : b;
 }
 
-double distance(struct LinearModel model, struct Point p)
+double distance(struct LinearModel model, double2 p)
 {
     return std::abs(model.slope * p.x - p.y + model.intercept) / std::sqrt(model.slope * model.slope + 1);
 }
@@ -80,13 +94,41 @@ __global__ void buildModel(double *data, int *indices, int numCombinations, stru
     models[t] = m;
 }
 
+// __global__ void distances(struct LinearModel model, double *data, int *indices, int trainSize)
+// {
+//     double2 p;
+//     p.x = data[2 * indices[d]];
+//     p.y = data[2 * indices[d] + 1];
+//     // double dist = distance(candidates[t], p);
+//     double dist = std::abs(candidates[t].slope * p.x - p.y + candidates[t].intercept) / std::sqrt(candidates[t].slope * candidates[t].slope + 1);
+// }
+
+__global__ void modelDistance(struct LinearModel *candidates, double *data, int *indices, int trainSize)
+{
+    int t = blockIdx.x * blockDim.x + threadIdx.x;
+    double sum = 0;
+    // reduce            double dist = std::abs(m.slope * p.x - p.y + m.intercept) / std::sqrt(m.slope * m.slope + 1);
+
+    for (int d = 0; d < trainSize; d++)
+    {
+        double2 p;
+        p.x = data[2 * indices[d]];
+        p.y = data[2 * indices[d] + 1];
+        // double dist = distance(candidates[t], p);
+        double dist = std::abs(candidates[t].slope * p.x - p.y + candidates[t].intercept) / std::sqrt(candidates[t].slope * candidates[t].slope + 1);
+        sum += dist * dist;
+    }
+    // mean squarred error
+    candidates[t].error = sum / trainSize;
+}
+
 int checkGood(struct LinearModel m, double *data, int dataSize, int *indices, int trainSize, double thresh, int *good)
 {
     // reduce
     int goodSize = 0;
     for (int d = trainSize; d < dataSize; d++)
     {
-        struct Point p;
+        double2 p;
         p.x = data[2 * indices[d]];
         p.y = data[2 * indices[d] + 1];
         double dist = distance(m, p);
@@ -104,25 +146,49 @@ struct LinearModel findBest(int trainSize, struct LinearModel *candidates, int c
 {
     struct LinearModel bestModel;
     bestModel.error = std::numeric_limits<double>::infinity();
+
+    // modelDistance<<<,>>>(candidates, data, indices, trainSize);
+
     // reduce
     for (int t = 0; t < candidatesSize; t++)
     {
         struct LinearModel m = candidates[t];
-        double sum = 0;
-        // reduce
-        for (int d = 0; d < trainSize; d++)
+        struct dist_functor dist_op = dist_functor(m.slope, m.intercept);
+        thrust::plus<double> add_op;
+        double2 dataPoints[trainSize];
+        for (int i = 0; i < trainSize; i++)
         {
-            struct Point p;
-            p.x = data[2 * indices[d]];
-            p.y = data[2 * indices[d] + 1];
-            double dist = distance(m, p);
-            sum += dist * dist;
+            dataPoints[i].x = data[2 * indices[i]];
+            dataPoints[i].y = data[2 * indices[i] + 1];
         }
+        double sum = thrust::transform_reduce(dataPoints, dataPoints + trainSize, dist_op, 0.0, add_op);
         // mean squarred error
         m.error = sum / trainSize;
-
-        bestModel = minModel(m, bestModel);
+        candidates[t] = m;
     }
+    for (int t = 0; t < candidatesSize; t++)
+    {
+        bestModel = minModel(candidates[t], bestModel);
+    }
+
+    // for (int t = 0; t < candidatesSize; t++)
+    // {
+    //     struct LinearModel m = candidates[t];
+    //     double sum = 0;
+    //     // reduce
+    //     for (int d = 0; d < trainSize; d++)
+    //     {
+    //         double2 p;
+    //         p.x = data[2 * indices[d]];
+    //         p.y = data[2 * indices[d] + 1];
+    //         double dist = distance(m, p);
+    //         sum += dist * dist;
+    //     }
+    //     // mean squarred error
+    //     m.error = sum / trainSize;
+
+    //     bestModel = minModel(m, bestModel);
+    // }
     return bestModel;
 }
 
@@ -144,7 +210,6 @@ struct LinearModel singleIter(int iter, int *indices, double *data, int dataSize
     // ignore some combinations OR fill them up with duplicates
     numCombinations = numBlocks * threadsPerBlock;
 
-    
     // produce every possible model
     int candidateSize = numCombinations * sizeof(struct LinearModel);
     struct LinearModel *d_candidateModels;
