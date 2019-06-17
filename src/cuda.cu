@@ -3,6 +3,8 @@
 #include <iostream>
 #include <fstream>
 #include <cmath>
+
+#include <thrust/device_vector.h>
 #include <thrust/reduce.h>
 #include <thrust/transform.h>
 #include <thrust/functional.h>
@@ -73,34 +75,20 @@ void shuffle(T *arr, int size)
     }
 }
 
-int * buildIndices(int dataSize, int maxIter)
-{
-    int *indices = (int*)malloc(maxIter * dataSize * sizeof(int));
-    for (int iter = 0; iter < maxIter; iter++)
-    {
-        for (int idx = 0; idx < dataSize; idx++)
-        {
-            indices[iter * dataSize + idx] = idx;
-        }
-        shuffle(&indices[iter * dataSize], dataSize);
-    }
-    return indices;
-}
-
 __device__ void triangToTuple(int t, int &x, int &y)
 {
     y = (int)((1 + (int)sqrtf(1 + 8 * t)) / 2);
     x = t - (y * (y - 1)) / 2;
 }
 
-__global__ void buildModel(double2 *data, int numCombinations, struct LinearModel *models)
+__global__ void buildModel(thrust::device_vector<double2>::iterator dataBegin, int numCombinations, struct LinearModel *models)
 {
     int t = blockIdx.x * blockDim.x + threadIdx.x;
     int i, k;
     triangToTuple(t, i, k);
 
-    double2 pI = data[i];
-    double2 pK = data[k];
+    double2 pI = dataBegin[i];
+    double2 pK = dataBegin[k];
 
     struct LinearModel m;
     m.slope = (pK.y - pI.y) / (pK.x - pI.x);
@@ -109,17 +97,17 @@ __global__ void buildModel(double2 *data, int numCombinations, struct LinearMode
     models[t] = m;
 }
 
-int checkGood(struct LinearModel m, double2 *data, int dataSize, int trainSize, double thresh, int *good)
+int checkGood(struct LinearModel m, thrust::device_vector<double2>::iterator begin, thrust::device_vector<double2>::iterator end, int dataSize, int trainSize, double thresh, int *good)
 {
-    // reduce
     int goodSize = 0;
-    for (int d = trainSize; d < dataSize; d++)
+    struct dist_functor dist_op = dist_functor(m.slope, m.intercept);
+    thrust::device_vector<double> dists(dataSize - trainSize);
+    thrust::transform(thrust::device, begin + trainSize, end, dists.begin(), dist_op);
+    for (int i = 0; i < dataSize - trainSize; i++)
     {
-        double2 p = data[d];
-        double dist = distance(m, p);
-        if (dist < thresh)
+        if (dists[i] < thresh)
         {
-            good[goodSize] = d;
+            good[goodSize] = i + trainSize;
             goodSize++;
         }
     }
@@ -127,7 +115,7 @@ int checkGood(struct LinearModel m, double2 *data, int dataSize, int trainSize, 
     return goodSize;
 }
 
-struct LinearModel findBest(int trainSize, struct LinearModel *candidates, int candidatesSize, double2 *data)
+struct LinearModel findBest(int trainSize, struct LinearModel *candidates, int candidatesSize, thrust::device_vector<double2>::iterator dataBegin)
 {
     double3 cs[candidatesSize];
 
@@ -137,7 +125,7 @@ struct LinearModel findBest(int trainSize, struct LinearModel *candidates, int c
         struct LinearModel m = candidates[t];
         struct dist_functor dist_op = dist_functor(m.slope, m.intercept);
         thrust::plus<double> add_op;
-        double sum = thrust::transform_reduce(data, data + trainSize, dist_op, 0.0, add_op);
+        double sum = thrust::transform_reduce(thrust::device, dataBegin, dataBegin + trainSize, dist_op, 0.0, add_op);
         // mean squarred error
         cs[t].x = m.slope;
         cs[t].y = m.intercept;
@@ -155,16 +143,8 @@ struct LinearModel findBest(int trainSize, struct LinearModel *candidates, int c
 
 struct LinearModel singleIter(int iter, double2 *rawData, int dataSize, double thresh, int trainSize, int wellCount)
 {
-    // create a copy of the data (maybe not needed in the future)
-    double2 data[dataSize];
-    for (int i = 0; i < dataSize; i++)
-    {
-        data[i] = rawData[i];
-    }
-    shuffle(data, dataSize);
-    double2 *d_data;
-    cudaMalloc(&d_data, dataSize * sizeof(double2));
-    cudaMemcpy(d_data, data, dataSize * sizeof(double2), cudaMemcpyHostToDevice);
+    shuffle(rawData, dataSize);
+    thrust::device_vector<double2> data(rawData, rawData + dataSize);
 
     // the number of unique combinations of all data points
     int numCombinations = triangMax(trainSize);
@@ -179,19 +159,19 @@ struct LinearModel singleIter(int iter, double2 *rawData, int dataSize, double t
     struct LinearModel *d_candidateModels;
     cudaMalloc(&d_candidateModels, candidateSize);
     
-    buildModel<<<numBlocks, threadsPerBlock>>>(d_data, numCombinations, d_candidateModels);
+    buildModel<<<numBlocks, threadsPerBlock>>>(data.begin(), numCombinations, d_candidateModels);
     struct LinearModel *candidateModels = (struct LinearModel*)malloc(candidateSize);
     cudaMemcpy(candidateModels, d_candidateModels, candidateSize, cudaMemcpyDeviceToHost);
     cudaFree(d_candidateModels);
 
-    struct LinearModel bestModel = findBest(trainSize, candidateModels, numCombinations, data);
+    struct LinearModel bestModel = findBest(trainSize, candidateModels, numCombinations, data.begin());
 
     free(candidateModels);
 
     // evaluate the models
     int numGood;
     int tmpInlierIndices[dataSize - trainSize];
-    numGood = checkGood(bestModel, data, dataSize, trainSize, thresh, tmpInlierIndices);
+    numGood = checkGood(bestModel, data.begin(), data.end(), dataSize, trainSize, thresh, tmpInlierIndices);
     if (numGood < wellCount)
     {
         struct LinearModel fail;
@@ -221,16 +201,14 @@ struct LinearModel singleIter(int iter, double2 *rawData, int dataSize, double t
     struct LinearModel *d_inlierModels;
     cudaMalloc(&d_inlierModels, numInlierComb * sizeof(inlierModels[0]));
 
-    buildModel<<<numBlocks, threadsPerBlock>>>(d_data, numInlierComb, d_inlierModels);
+    buildModel<<<numBlocks, threadsPerBlock>>>(data.begin(), numInlierComb, d_inlierModels);
 
     cudaMemcpy(inlierModels, d_inlierModels, numInlierComb * sizeof(inlierModels[0]), cudaMemcpyDeviceToHost);
     cudaFree(d_inlierModels);
 
-    bestModel = findBest(numTrainAndGood, inlierModels, numInlierComb, data);
+    bestModel = findBest(numTrainAndGood, inlierModels, numInlierComb, data.begin());
 
     free(inlierModels);
-
-    cudaFree(d_data);
 
     return bestModel;
 }
