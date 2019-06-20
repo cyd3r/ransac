@@ -17,9 +17,9 @@ def generate(out_path: str, samples: int, linear_ratio: float, slope: float, int
     num_noise = samples - num_linear
 
     # noise = uniform distributed
-    noise = [np.random.uniform(high=dimensions) for _ in range(num_noise)]
+    noise = [(*np.random.uniform(high=dimensions), 0) for _ in range(num_noise)]
 
-    linear = [random_linear2d(slope, intercept, linear_error, dimensions[0]) for _ in range(num_linear)]
+    linear = [(*random_linear2d(slope, intercept, linear_error, dimensions[0]), 1) for _ in range(num_linear)]
 
     data = np.vstack(noise + linear)
     np.random.shuffle(data)
