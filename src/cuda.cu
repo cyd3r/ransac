@@ -60,6 +60,11 @@ struct LinearModel minModel(struct LinearModel a, struct LinearModel b)
     return a.error < b.error ? a : b;
 }
 
+struct LinearModel maxModel(struct LinearModel a, struct LinearModel b)
+{
+    return a.error > b.error ? a : b;
+}
+
 double distance(struct LinearModel model, double2 p)
 {
     return std::abs(model.slope * p.x - p.y + model.intercept) / std::sqrt(model.slope * model.slope + 1);
@@ -163,6 +168,7 @@ struct LinearModel singleIter(int iter, double2 *rawData, int dataSize, double t
     // evaluate the models
     int numGood;
     numGood = checkGood(bestModel, data, dataSize, 2, thresh, inliers + 2);
+    std::cout << inliers[0] << " " << inliers[1] << " " << numGood << std::endl;
     *inliersSize = numGood + 2;
     if (numGood < wellCount)
     {
@@ -170,7 +176,7 @@ struct LinearModel singleIter(int iter, double2 *rawData, int dataSize, double t
         struct LinearModel fail;
         fail.slope = std::numeric_limits<double>::quiet_NaN();
         fail.intercept = std::numeric_limits<double>::quiet_NaN();
-        fail.error = std::numeric_limits<double>::infinity();
+        fail.error = -1;
         return fail;
     }
 
@@ -218,18 +224,22 @@ struct LinearModel ransac(double2 *data, int dataSize, int maxIter, double thres
 {
     struct LinearModel best;
     int *inliers = (int *)malloc(dataSize * sizeof(int));
+    int *bestInliers = (int *)malloc(dataSize * sizeof(int));
+    int bestInliersSize = 0;
     int inliersSize;
-    best.error = std::numeric_limits<double>::infinity();
+    best.error = -1;
     int bestIter = -1;
     for (int iter = 0; iter < maxIter; iter++)
     {
         struct LinearModel m = singleIter(iter, data, dataSize, thresh, wellCount, inliers, &inliersSize);
         std::cout << iter << " " << m.slope << " " << m.intercept << " " << m.error << std::endl;
-        if (m.error < best.error)
+        if (m.error > best.error)
         {
             bestIter = iter;
+            memcpy(bestInliers, inliers, inliersSize * sizeof(int));
+            bestInliersSize = inliersSize;
         }
-        best = minModel(m, best);
+        best = maxModel(m, best);
     }
 
     if (bestIter < 0)
@@ -238,17 +248,19 @@ struct LinearModel ransac(double2 *data, int dataSize, int maxIter, double thres
     }
     else
     {
+        std::cout << "best iter: " << bestIter << std::endl;
         // write the inliers to a file
         FILE *f = fopen("inliers.txt", "w");
-        for (int i = 0; i < inliersSize; i++)
+        for (int i = 0; i < bestInliersSize; i++)
         {
-            fprintf(f, "%d\n", inliers[i]);
+            fprintf(f, "%d\n", bestInliers[i]);
         }
         fclose(f);
-        // best = fit(data, inliers, inliersSize);
+        // best = fit(data, bestInliers, bestInliersSize);
     }
 
     free(inliers);
+    free(bestInliers);
 
     return best;
 }
