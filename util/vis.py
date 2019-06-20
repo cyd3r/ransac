@@ -9,11 +9,7 @@ def abline(slope, intercept):
     y = slope * x + intercept
     plt.plot(x, y, '--')
 
-def show(csv_path: str, slope: float, intercept: float, error: float):
-    data = np.loadtxt(csv_path, delimiter=",")
-
-    inliers = np.loadtxt("inliers.txt", np.int)
-
+def plot_points(data, inliers):
     if data.shape[1] == 3:
         categories = data[:, 2].astype(np.uint8)
         colour_map = cm.rainbow(np.linspace(0, 1, categories.max() + 2))
@@ -24,6 +20,12 @@ def show(csv_path: str, slope: float, intercept: float, error: float):
         colours = None
 
     plt.scatter(data[:, 0], data[:, 1], color=colours)
+
+def show(csv_path: str, slope: float, intercept: float, error: float):
+    data = np.loadtxt(csv_path, delimiter=",")
+    inliers = np.loadtxt("inliers.txt", np.int)
+
+    plot_points(data, inliers)
     abline(slope, intercept)
     plt.title(f"Slope: {slope:.4}, Intercept: {intercept:.4}, Error: {error:.4}")
     plt.show()
