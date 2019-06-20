@@ -65,20 +65,6 @@ double distance(struct LinearModel model, double2 p)
     return std::abs(model.slope * p.x - p.y + model.intercept) / std::sqrt(model.slope * model.slope + 1);
 }
 
-template<class T>
-void shuffle(T *arr, int size)
-{
-    // Fisher Yates Shuffle
-    // https://en.wikipedia.org/wiki/Fisher%E2%80%93Yates_shuffle
-    for (int i = size - 1; i > 0; i--) 
-    { 
-        int j = rand() % (i + 1); 
-        T tmp = arr[i];
-        arr[i] = arr[j];
-        arr[j] = tmp;
-    }
-}
-
 __device__ void triangToTuple(int t, int &x, int &y)
 {
     y = (int)((1 + (int)sqrtf(1 + 8 * t)) / 2);
@@ -121,7 +107,9 @@ int checkGood(struct LinearModel m, double2 *data, int dataSize, int trainSize, 
 
 struct LinearModel findBest(int trainSize, struct LinearModel *candidates, int candidatesSize, double2 *data, double2 *d_data)
 {
-    double3 cs[candidatesSize];
+    std::cout << candidatesSize * sizeof(double2) / 1024.0 / 1024.0 / 1024.0 << " GB" << std::endl;
+    // double3 cs[candidatesSize];
+    double3 *cs = (double3 *)malloc(candidatesSize * sizeof(double3));
 
     // reduce
     for (int t = 0; t < candidatesSize; t++)
@@ -136,8 +124,11 @@ struct LinearModel findBest(int trainSize, struct LinearModel *candidates, int c
         cs[t].z = sum / trainSize;
     }
 
+    std::cout << "end reduce" << std::endl;
+
     struct min_model min_op;
     double3 bestM = thrust::reduce(cs, cs + candidatesSize, getInfModel(), min_op);
+    free(cs);
     struct LinearModel m;
     m.slope = bestM.x;
     m.intercept = bestM.y;
@@ -145,31 +136,34 @@ struct LinearModel findBest(int trainSize, struct LinearModel *candidates, int c
     return m;
 }
 
-struct LinearModel singleIter(int iter, double2 *rawData, int dataSize, double thresh, int wellCount)
+struct LinearModel singleIter(int iter, double2 *rawData, int dataSize, double thresh, int wellCount, int *inliers, int *inliersSize)
 {
-    // create a copy of the data (maybe not needed in the future)
-    double2 data[dataSize];
-    for (int i = 0; i < dataSize; i++)
+    if (iter >= 2 * dataSize)
     {
-        data[i] = rawData[i];
+        std::cerr << "Dataset is too small" << std::endl;
+        exit(1);
     }
-    shuffle(data, dataSize);
+
+    double2 data[dataSize];
+    memcpy(data, rawData, dataSize * sizeof(double2));
+
+    inliers[0] = 2 * iter;
+    inliers[1] = 2 * iter + 1;
+
     double2 *d_data;
     cudaMalloc(&d_data, dataSize * sizeof(double2));
     cudaMemcpy(d_data, data, dataSize * sizeof(double2), cudaMemcpyHostToDevice);
 
-    double2 pI = data[0];
-    double2 pK = data[1];
-
+    double2 pI = data[inliers[0]];
+    double2 pK = data[inliers[1]];
     struct LinearModel bestModel;
     bestModel.slope = (pK.y - pI.y) / (pK.x - pI.x);
     bestModel.intercept = pI.y - bestModel.slope * pI.x;
 
-
     // evaluate the models
     int numGood;
-    int tmpInlierIndices[dataSize - 2];
-    numGood = checkGood(bestModel, data, dataSize, 2, thresh, tmpInlierIndices);
+    numGood = checkGood(bestModel, data, dataSize, 2, thresh, inliers + 2);
+    *inliersSize = numGood + 2;
     if (numGood < wellCount)
     {
         std::cout << "num good: " << numGood << "<" << wellCount << std::endl;
@@ -179,26 +173,30 @@ struct LinearModel singleIter(int iter, double2 *rawData, int dataSize, double t
         fail.error = std::numeric_limits<double>::infinity();
         return fail;
     }
-    else
-    {
-        // reorder (put the new inliers first)
-        for (int g = 0; g < numGood; g++)
-        {
-            double2 tmp = data[2 + g];
-            data[2 + g] = data[tmpInlierIndices[g]];
-            data[tmpInlierIndices[g]] = tmp;
-        }
-    }
 
     bestModel.error = numGood;
 
-    int threadsPerBlock = 256;
-    int numTrainAndGood = 2 + numGood;
-    int numInlierComb = triangMax(numTrainAndGood);
+    cudaFree(d_data);
 
-    // fit again using the new inlier indices
+    return bestModel;
+}
+
+struct LinearModel fit(double2 *rawData, int *inliers, int inliersSize)
+{
+    std::cout << inliersSize << " inliers, " << triangMax(inliersSize) << " combinations" << std::endl;
+    double2 data[inliersSize];
+    memcpy(data, rawData, inliersSize * sizeof(double2));
+
+    double2 *d_data;
+    cudaMalloc(&d_data, inliersSize * sizeof(double2));
+    cudaMemcpy(d_data, data, inliersSize * sizeof(double2), cudaMemcpyHostToDevice);
+
+    int threadsPerBlock = 256;
+    int numInlierComb = triangMax(inliersSize);
+
     int numBlocks = numInlierComb / threadsPerBlock;
     numInlierComb = numBlocks * threadsPerBlock;
+
     struct LinearModel *inlierModels = (struct LinearModel*)malloc(numInlierComb * sizeof(struct LinearModel));
     struct LinearModel *d_inlierModels;
     cudaMalloc(&d_inlierModels, numInlierComb * sizeof(inlierModels[0]));
@@ -208,10 +206,9 @@ struct LinearModel singleIter(int iter, double2 *rawData, int dataSize, double t
     cudaMemcpy(inlierModels, d_inlierModels, numInlierComb * sizeof(inlierModels[0]), cudaMemcpyDeviceToHost);
     cudaFree(d_inlierModels);
 
-    bestModel = findBest(numTrainAndGood, inlierModels, numInlierComb, data, d_data);
+    struct LinearModel bestModel = findBest(inliersSize, inlierModels, numInlierComb, data, d_data);
 
     free(inlierModels);
-
     cudaFree(d_data);
 
     return bestModel;
@@ -220,19 +217,39 @@ struct LinearModel singleIter(int iter, double2 *rawData, int dataSize, double t
 struct LinearModel ransac(double2 *data, int dataSize, int maxIter, double thresh, int wellCount)
 {
     struct LinearModel best;
+    int *inliers = (int *)malloc(dataSize * sizeof(int));
+    int inliersSize;
     best.error = std::numeric_limits<double>::infinity();
+    int bestIter = -1;
     for (int iter = 0; iter < maxIter; iter++)
     {
-        struct LinearModel m = singleIter(iter, data, dataSize, thresh, wellCount);
+        struct LinearModel m = singleIter(iter, data, dataSize, thresh, wellCount, inliers, &inliersSize);
         std::cout << iter << " " << m.slope << " " << m.intercept << " " << m.error << std::endl;
+        if (m.error < best.error)
+        {
+            bestIter = iter;
+        }
         best = minModel(m, best);
     }
-    std::cout << "error: " << best.error << std::endl;
 
-    if (best.error == std::numeric_limits<double>::infinity())
+    if (bestIter < 0)
     {
         std::cerr << "RANSAC failed" << std::endl;
     }
+    else
+    {
+        // write the inliers to a file
+        FILE *f = fopen("inliers.txt", "w");
+        for (int i = 0; i < inliersSize; i++)
+        {
+            fprintf(f, "%d\n", inliers[i]);
+        }
+        fclose(f);
+        // best = fit(data, inliers, inliersSize);
+    }
+
+    free(inliers);
+
     return best;
 }
 
@@ -261,9 +278,9 @@ int main(int argc, char const *argv[])
     int dataSize = data.size();
 
     clock_t t0 = clock();
-    const int numIters = 7;
-    float wellRatio = .05f;
-    double errorThresh = .3;
+    const int numIters = 25;
+    float wellRatio = .01f;
+    double errorThresh = .4;
     struct LinearModel m = ransac(&data[0], dataSize, numIters, errorThresh, (int)(wellRatio * dataSize));
     clock_t t1 = clock();
     double elapsed_secs = double(t1 - t0) / CLOCKS_PER_SEC;

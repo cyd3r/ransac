@@ -12,10 +12,14 @@ def abline(slope, intercept):
 def show(csv_path: str, slope: float, intercept: float, error: float):
     data = np.loadtxt(csv_path, delimiter=",")
 
+    inliers = np.loadtxt("inliers.txt", np.int)
+
     if data.shape[1] == 3:
         categories = data[:, 2].astype(np.uint8)
-        colour_map = cm.rainbow(np.linspace(0, 1, categories.max() + 1))
+        colour_map = cm.rainbow(np.linspace(0, 1, categories.max() + 2))
         colours = [colour_map[c] for c in categories]
+
+        colours = [colour_map[categories.max() + 1] if i in inliers else c for i, c in enumerate(colours)]
     else:
         colours = None
 
