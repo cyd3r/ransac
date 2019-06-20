@@ -4,44 +4,80 @@
 #include <fstream>
 #include <cmath>
 
+#include <thrust/host_vector.h>
+#include <thrust/device_vector.h>
+#include <thrust/gather.h>
+#include <thrust/transform.h>
+
+#ifndef USE_GPU
+#define USE_GPU 1
+#endif
+
 // #include "fit.cu"
 
 struct LinearModel
 {
     double slope;
     double intercept;
-    double error;
+    double numInliers;
 };
 
 struct LinearModel maxModel(struct LinearModel a, struct LinearModel b)
 {
-    return a.error > b.error ? a : b;
+    return a.numInliers > b.numInliers ? a : b;
 }
 
-double distance(struct LinearModel model, double2 p)
+struct thresh_op
 {
-    return std::abs(model.slope * p.x - p.y + model.intercept) / std::sqrt(model.slope * model.slope + 1);
-}
-
-int checkGood(struct LinearModel m, double2 *data, int dataSize, int trainSize, double thresh, int *good)
-{
-    // reduce
-    int goodSize = 0;
-    for (int d = trainSize; d < dataSize; d++)
+    double slope, intercept, thresh;
+    thresh_op(const double _slope, const double _intercept, const double _thresh)
     {
-        double2 p = data[d];
-        double dist = distance(m, p);
-        if (dist < thresh)
-        {
-            good[goodSize] = d;
-            goodSize++;
-        }
+        slope = _slope;
+        intercept = _intercept;
+        thresh = _thresh;
     }
+
+    __host__ __device__
+    int operator()(const double2 point) const
+    {
+        return std::abs(slope * point.x - point.y + intercept) < thresh ? 1 : 0;
+    }
+};
+
+int checkGood(struct LinearModel model, double2 *data, int dataSize, double thresh, int *good)
+{
+    thresh *= std::sqrt(model.slope * model.slope + 1);
+#if USE_GPU
+    thrust::device_vector<double2> d_data(data, data + dataSize);
+    thrust::device_vector<int> isGood(dataSize);
+    // calculate distances and compare them to the threshold
+    thrust::transform(thrust::device, d_data.begin(), d_data.end(), isGood.begin(), thresh_op(model.slope, model.intercept, thresh));
+
+    thrust::device_vector<int> d_indices(dataSize);
+    thrust::inclusive_scan(thrust::device, isGood.begin(), isGood.end(), d_indices.begin());
+
+    thrust::host_vector<int> indices(d_indices.begin(), d_indices.end());
+#else
+    thrust::host_vector<int> isGood(dataSize);
+    thrust::transform(data, data + dataSize, isGood.begin(), thresh_op(model.slope, model.intercept, thresh));
+    thrust::host_vector<int> indices(dataSize);
+    thrust::inclusive_scan(isGood.begin(), isGood.end(), indices.begin());
+#endif
+
+    for (int i = dataSize - 1; i >= 0; i--)
+    {
+        //     x     x x x
+        // 0 0 1 1 1 2 3 4 4 4
+        // 0 1 2 3 4 5 6 7 8 9
+        // 2 5 6 7
+        good[indices[i]] = i;
+    }
+    int goodSize = indices[dataSize - 1];
 
     return goodSize;
 }
 
-struct LinearModel singleIter(int iter, double2 *rawData, int dataSize, double thresh, int wellCount, int *inliers, int *inliersSize)
+struct LinearModel singleIter(int iter, double2 *data, int dataSize, double thresh, int wellCount, int *inliers, int *inliersSize)
 {
     if (iter >= 2 * dataSize)
     {
@@ -49,15 +85,8 @@ struct LinearModel singleIter(int iter, double2 *rawData, int dataSize, double t
         exit(1);
     }
 
-    double2 data[dataSize];
-    memcpy(data, rawData, dataSize * sizeof(double2));
-
     inliers[0] = 2 * iter;
     inliers[1] = 2 * iter + 1;
-
-    double2 *d_data;
-    cudaMalloc(&d_data, dataSize * sizeof(double2));
-    cudaMemcpy(d_data, data, dataSize * sizeof(double2), cudaMemcpyHostToDevice);
 
     double2 pI = data[inliers[0]];
     double2 pK = data[inliers[1]];
@@ -67,7 +96,7 @@ struct LinearModel singleIter(int iter, double2 *rawData, int dataSize, double t
 
     // evaluate the models
     int numGood;
-    numGood = checkGood(bestModel, data, dataSize, 2, thresh, inliers + 2);
+    numGood = checkGood(bestModel, data, dataSize, thresh, inliers + 2);
     std::cout << inliers[0] << " " << inliers[1] << " " << numGood << std::endl;
     *inliersSize = numGood + 2;
     if (numGood < wellCount)
@@ -76,13 +105,11 @@ struct LinearModel singleIter(int iter, double2 *rawData, int dataSize, double t
         struct LinearModel fail;
         fail.slope = std::numeric_limits<double>::quiet_NaN();
         fail.intercept = std::numeric_limits<double>::quiet_NaN();
-        fail.error = -1;
+        fail.numInliers = -1;
         return fail;
     }
 
-    bestModel.error = numGood;
-
-    cudaFree(d_data);
+    bestModel.numInliers = numGood;
 
     return bestModel;
 }
@@ -94,13 +121,13 @@ struct LinearModel ransac(double2 *data, int dataSize, int maxIter, double thres
     int *bestInliers = (int *)malloc(dataSize * sizeof(int));
     int bestInliersSize = 0;
     int inliersSize;
-    best.error = -1;
+    best.numInliers = -1;
     int bestIter = -1;
     for (int iter = 0; iter < maxIter; iter++)
     {
         struct LinearModel m = singleIter(iter, data, dataSize, thresh, wellCount, inliers, &inliersSize);
-        std::cout << iter << " " << m.slope << " " << m.intercept << " " << m.error << std::endl;
-        if (m.error > best.error)
+        std::cout << iter << " " << m.slope << " " << m.intercept << " " << m.numInliers << std::endl;
+        if (m.numInliers > best.numInliers)
         {
             bestIter = iter;
             memcpy(bestInliers, inliers, inliersSize * sizeof(int));
@@ -175,7 +202,7 @@ int main(int argc, char const *argv[])
         printf("Error opening file!\n");
         exit(1);
     }
-    fprintf(f, "%f %f %f\n", m.slope, m.intercept, m.error);
+    fprintf(f, "%f %f %f\n", m.slope, m.intercept, m.numInliers);
     fclose(f);
     return 0;
 }
