@@ -2,7 +2,6 @@
 __pycache__/
 *.csv
 *.out
-vis.jpg
-fit.jpg
+*.jpg
 results.txt
 inliers.txt
