@@ -44,7 +44,7 @@ struct thresh_op
     }
 };
 
-int checkGood(struct LinearModel model, double2 *data, int dataSize, double thresh, int *good)
+int countInliers(struct LinearModel model, double2 *data, int dataSize, double thresh, int *good)
 {
     thresh *= std::sqrt(model.slope * model.slope + 1);
 #if USE_GPU
@@ -96,7 +96,7 @@ struct LinearModel singleIter(int iter, double2 *data, int dataSize, double thre
 
     // evaluate the models
     int numGood;
-    numGood = checkGood(bestModel, data, dataSize, thresh, inliers + 2);
+    numGood = countInliers(bestModel, data, dataSize, thresh, inliers + 2);
     std::cout << inliers[0] << " " << inliers[1] << " " << numGood << std::endl;
     *inliersSize = numGood + 2;
     if (numGood < wellCount)
