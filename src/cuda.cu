@@ -6,8 +6,7 @@
 
 #include <thrust/host_vector.h>
 #include <thrust/device_vector.h>
-#include <thrust/gather.h>
-#include <thrust/transform.h>
+#include <thrust/transform_scan.h>
 
 #ifndef USE_GPU
 #define USE_GPU 1
@@ -47,21 +46,26 @@ struct thresh_op
 int countInliers(struct LinearModel model, double2 *data, int dataSize, double thresh, int *good)
 {
     thresh *= std::sqrt(model.slope * model.slope + 1);
+    // calculate distances and compare them to the threshold
+    // then, use a cumulative sum to mark the inliers
 #if USE_GPU
     thrust::device_vector<double2> d_data(data, data + dataSize);
-    thrust::device_vector<int> isGood(dataSize);
-    // calculate distances and compare them to the threshold
-    thrust::transform(thrust::device, d_data.begin(), d_data.end(), isGood.begin(), thresh_op(model.slope, model.intercept, thresh));
-
     thrust::device_vector<int> d_indices(dataSize);
-    thrust::inclusive_scan(thrust::device, isGood.begin(), isGood.end(), d_indices.begin());
+    thrust::transform_inclusive_scan(
+        thrust::device,
+        d_data.begin(), d_data.end(),
+        d_indices.begin(),
+        thresh_op(model.slope, model.intercept, thresh),
+        thrust::plus<int>());
 
     thrust::host_vector<int> indices(d_indices.begin(), d_indices.end());
 #else
-    thrust::host_vector<int> isGood(dataSize);
-    thrust::transform(data, data + dataSize, isGood.begin(), thresh_op(model.slope, model.intercept, thresh));
     thrust::host_vector<int> indices(dataSize);
-    thrust::inclusive_scan(isGood.begin(), isGood.end(), indices.begin());
+    thrust::transform_inclusive_scan(
+        data, data + dataSize,
+        indices.begin(),
+        thresh_op(model.slope, model.intercept, thresh),
+        thrust::plus<int>());
 #endif
 
     for (int i = dataSize - 1; i >= 0; i--)
@@ -69,8 +73,11 @@ int countInliers(struct LinearModel model, double2 *data, int dataSize, double t
         //     x     x x x
         // 0 0 1 1 1 2 3 4 4 4
         // 0 1 2 3 4 5 6 7 8 9
-        // 2 5 6 7
-        good[indices[i]] = i;
+        // _ 2 5 6 7
+        if (indices[i] > 0)
+        {
+            good[indices[i] - 1] = i;
+        }
     }
     int goodSize = indices[dataSize - 1];
 
@@ -85,20 +92,15 @@ struct LinearModel singleIter(int iter, double2 *data, int dataSize, double thre
         exit(1);
     }
 
-    inliers[0] = 2 * iter;
-    inliers[1] = 2 * iter + 1;
+    double2 pI = data[2 * iter];
+    double2 pK = data[2 * iter + 1];
+    struct LinearModel model;
+    model.slope = (pK.y - pI.y) / (pK.x - pI.x);
+    model.intercept = pI.y - model.slope * pI.x;
 
-    double2 pI = data[inliers[0]];
-    double2 pK = data[inliers[1]];
-    struct LinearModel bestModel;
-    bestModel.slope = (pK.y - pI.y) / (pK.x - pI.x);
-    bestModel.intercept = pI.y - bestModel.slope * pI.x;
-
-    // evaluate the models
     int numGood;
-    numGood = countInliers(bestModel, data, dataSize, thresh, inliers + 2);
-    std::cout << inliers[0] << " " << inliers[1] << " " << numGood << std::endl;
-    *inliersSize = numGood + 2;
+    numGood = countInliers(model, data, dataSize, thresh, inliers);
+    *inliersSize = numGood;
     if (numGood < wellCount)
     {
         std::cout << "num good: " << numGood << "<" << wellCount << std::endl;
@@ -109,9 +111,9 @@ struct LinearModel singleIter(int iter, double2 *data, int dataSize, double thre
         return fail;
     }
 
-    bestModel.numInliers = numGood;
+    model.numInliers = numGood;
 
-    return bestModel;
+    return model;
 }
 
 struct LinearModel ransac(double2 *data, int dataSize, int maxIter, double thresh, int wellCount)
