@@ -13,12 +13,13 @@ An implementation of the RANSAC algorithm. The goal is to provide a GPU implemen
 python3 util/generate.py
 
 # compile the RANSAC implementation
-g++ src/main.cpp
-./cu_build.sh
+make
 
 # and run it!
-./a.out
-./cuda.out
+# with CUDA
+./gpu.out
+# without CUDA
+./host.out
 
 # visualisation
 python3 util/vis.py
