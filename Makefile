@@ -9,6 +9,8 @@ host: src/cuda.cu
 	$(CC) -o host.out -DUSE_GPU=0 src/cuda.cu
 
 clean:
-	rm *.out
+	rm -f *.out
 cleanfig:
-	rm *.jpg
+	rm -f *.jpg
+cleandat:
+	rm -f *.csv *.txt
