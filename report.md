@@ -58,6 +58,12 @@ t1 = time.time()
 delta = t1 - t0
 ```
 
+Folgende Zeiten wurden gemessen:
+
+![Vergleich von GPU und CPU](times.jpg)
+
+Es wird ersichtlich,, das vor allem mit größeren Datenmengen die GPU-Variante deutlich schneller läuft.
+
 Folgender Speedup konnte gemessen werden:
 
 ![Speedup mit CUDA Implementierung](speedup.jpg)

@@ -21,6 +21,9 @@ make
 # without CUDA
 ./host.out
 
+# run a fit on the extracted inliers
+python3 fit.py
+
 # visualisation
 python3 util/vis.py
 ```
