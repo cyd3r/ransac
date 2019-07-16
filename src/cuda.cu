@@ -12,8 +12,6 @@
 #define USE_GPU 1
 #endif
 
-// #include "fit.cu"
-
 struct LinearModel
 {
     double slope;
