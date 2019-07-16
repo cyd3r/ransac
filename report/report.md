@@ -46,6 +46,27 @@ for (int i = dataSize - 1; i >= 0; i--)
 
 Zu Beginn des Programms wird eine Anzahl an Iterationen festgelegt und für jede Iteration ein Model berechnet. Abschließend wird das Model mit der höchsten Anzahl an Inliers ausgewählt. Die Menge der Inliers wird in eine Datei geschrieben, um auf dieser Menge einen Fit-Algorithmus anzuwenden, der dan die abschließende Gerade berechnet.
 
+## Benutzung
+
+``` sh
+# Punkte generieren
+python3 util/generate.py 100000
+# Inlier finden
+./gpu.out
+# zur Visualisierung, es wird eine Datei `vis.jpg` erstellt
+python3 util/vis.py
+```
+
+![Visualisierung der Datenpunkte](vis.jpg)
+
+``` sh
+# lineare Regression mit den Inliern
+python3 src/fit.py
+# es wird eine Datei `fit.jpg` erstellt mit der abschließenden Visualisierung
+```
+
+![Abschließender Fit](fit.jpg)
+
 ## Zeitmessung
 
 Die Zeit wurde mit einem Python-Skript gemessen:
@@ -58,7 +79,7 @@ t1 = time.time()
 delta = t1 - t0
 ```
 
-Folgende Zeiten wurden gemessen:
+Folgende Zeiten wurden gemessen mit einer Nvidia GeForce GTX 1080ti Grafikkarte und einem Intel(R) Core(TM) i7-8700K CPU @ 3.70GHz Prozessor (sechs Kerne):
 
 ![Vergleich von GPU und CPU](times.jpg)
 

@@ -3,5 +3,6 @@ __pycache__/
 *.csv
 *.out
 *.jpg
+!report/*.jpg
 results.txt
 inliers.txt
