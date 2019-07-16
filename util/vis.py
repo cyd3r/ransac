@@ -10,16 +10,11 @@ def abline(slope, intercept):
     plt.plot(x, y, '--')
 
 def plot_points(data, inliers):
-    if data.shape[1] == 3:
-        categories = data[:, 2].astype(np.uint8)
-        colour_map = cm.rainbow(np.linspace(0, 1, categories.max() + 2))
-        colours = [colour_map[c] for c in categories]
-
-        colours = [colour_map[categories.max() + 1] if i in inliers else c for i, c in enumerate(colours)]
-    else:
-        colours = None
-
-    plt.scatter(data[:, 0], data[:, 1], color=colours)
+    categories = data[:, 2].astype(np.uint8)
+    unique_cats = np.unique(categories)
+    for c in unique_cats:
+        data[categories == c]
+        plt.scatter(data[categories == c, 0], data[categories == c, 1], label="noise" if c == 0 else "linear")
 
 def show(csv_path: str, slope: float, intercept: float, error: float):
     data = np.loadtxt(csv_path, delimiter=",")
@@ -28,6 +23,7 @@ def show(csv_path: str, slope: float, intercept: float, error: float):
     plot_points(data, inliers)
     abline(slope, intercept)
     plt.title(f"Slope: {slope:.4}, Intercept: {intercept:.4}, Error: {error:.4}")
+    plt.legend()
     plt.show()
 
     plt.savefig("vis.jpg")

@@ -19,22 +19,22 @@ model = LinearRegression()
 model.fit(fit_data[:, 0].reshape(-1, 1), fit_data[:, 1].reshape(-1, 1))
 # model = np.polyfit(fit_data[0,:], fit_data[1,:], 1)
 
-if data.shape[1] == 3:
-    categories = data[:, 2].astype(np.uint8)
-    colour_map = cm.rainbow(np.linspace(0, 1, categories.max() + 2))
-    colours = [colour_map[c] for c in categories]
+# only use a subset for plotting
+plot_data = data
 
-    colours = [colour_map[categories.max() + 1] if i in inliers else c for i, c in enumerate(colours)]
-else:
-    colours = None
+categories = plot_data[:, 2].astype(np.uint8)
 
-plt.scatter(data[:, 0], data[:, 1], color=colours)
+is_inlier = np.array([i in inliers for i in range(len(categories))])
+plt.scatter(plot_data[is_inlier, 0], plot_data[is_inlier, 1], label="inliers")
+for c in np.unique(categories):
+    sel = (c == categories) & (~is_inlier)
+    plt.scatter(plot_data[sel, 0], plot_data[sel, 1], label="noise" if c == 0 else "linear")
+
 x = np.arange(20)
 y = model.predict(x.reshape(-1, 1))
 plt.plot(x, y)
 
-# abline(slope, intercept)
-plt.title("Slope: {slope:.4}, Intercept: {intercept:.4}, Error: {error:.4}")
+plt.legend()
 plt.show()
 
 plt.savefig("fit.jpg")
