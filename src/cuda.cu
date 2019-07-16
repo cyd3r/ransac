@@ -41,23 +41,27 @@ struct thresh_op
     }
 };
 
-int countInliers(struct LinearModel model, double2 *data, int dataSize, double thresh, int *good)
+#if USE_GPU
+int countInliers(struct LinearModel model, thrust::device_vector<double2>::iterator dataBegin, thrust::device_vector<double2>::iterator dataEnd, int dataSize, double thresh, int *good)
 {
     thresh *= std::sqrt(model.slope * model.slope + 1);
     // calculate distances and compare them to the threshold
     // then, use a cumulative sum to mark the inliers
-#if USE_GPU
-    thrust::device_vector<double2> d_data(data, data + dataSize);
     thrust::device_vector<int> d_indices(dataSize);
     thrust::transform_inclusive_scan(
         thrust::device,
-        d_data.begin(), d_data.end(),
+        dataBegin, dataEnd,
         d_indices.begin(),
         thresh_op(model.slope, model.intercept, thresh),
         thrust::plus<int>());
 
     thrust::host_vector<int> indices(d_indices.begin(), d_indices.end());
 #else
+int countInliers(struct LinearModel model, double2 *data, int dataSize, double thresh, int *good)
+{
+    thresh *= std::sqrt(model.slope * model.slope + 1);
+    // calculate distances and compare them to the threshold
+    // then, use a cumulative sum to mark the inliers
     thrust::host_vector<int> indices(dataSize);
     thrust::transform_inclusive_scan(
         data, data + dataSize,
@@ -82,7 +86,11 @@ int countInliers(struct LinearModel model, double2 *data, int dataSize, double t
     return goodSize;
 }
 
+#if USE_GPU
+struct LinearModel singleIter(int iter, double2 *data, thrust::device_vector<double2>::iterator dataBegin, thrust::device_vector<double2>::iterator dataEnd, int dataSize, double thresh, int wellCount, int *inliers, int *inliersSize)
+#else
 struct LinearModel singleIter(int iter, double2 *data, int dataSize, double thresh, int wellCount, int *inliers, int *inliersSize)
+#endif
 {
     if (iter >= 2 * dataSize)
     {
@@ -96,8 +104,11 @@ struct LinearModel singleIter(int iter, double2 *data, int dataSize, double thre
     model.slope = (pK.y - pI.y) / (pK.x - pI.x);
     model.intercept = pI.y - model.slope * pI.x;
 
-    int numGood;
-    numGood = countInliers(model, data, dataSize, thresh, inliers);
+#if USE_GPU
+    int numGood = countInliers(model, dataBegin, dataEnd, dataSize, thresh, inliers);
+#else
+    int numGood = countInliers(model, data, dataSize, thresh, inliers);
+#endif
     *inliersSize = numGood;
     if (numGood < wellCount)
     {
@@ -123,9 +134,14 @@ struct LinearModel ransac(double2 *data, int dataSize, int maxIter, double thres
     int inliersSize;
     best.numInliers = -1;
     int bestIter = -1;
+    thrust::device_vector<double2> d_data(data, data + dataSize);
     for (int iter = 0; iter < maxIter; iter++)
     {
+#if USE_GPU
+        struct LinearModel m = singleIter(iter, data, d_data.begin(), d_data.end(), dataSize, thresh, wellCount, inliers, &inliersSize);
+#else
         struct LinearModel m = singleIter(iter, data, dataSize, thresh, wellCount, inliers, &inliersSize);
+#endif
         std::cout << iter << " " << m.slope << " " << m.intercept << " " << m.numInliers << std::endl;
         if (m.numInliers > best.numInliers)
         {
