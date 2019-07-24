@@ -20,6 +20,11 @@ def show(csv_path: str, slope: float, intercept: float, error: float):
     data = np.loadtxt(csv_path, delimiter=",")
     inliers = np.loadtxt("inliers.txt", np.int)
 
+    # only use a subset for plotting
+    max_datapoints = 1000
+    if len(data) > max_datapoints:
+        data = data[::(len(data) // max_datapoints)]
+
     plot_points(data, inliers)
     abline(slope, intercept)
     plt.title(f"Slope: {slope:.4}, Intercept: {intercept:.4}, Error: {error:.4}")
