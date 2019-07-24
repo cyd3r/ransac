@@ -6,3 +6,4 @@ __pycache__/
 !report/*.jpg
 results.txt
 inliers.txt
+*.pdf

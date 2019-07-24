@@ -26,7 +26,7 @@ nvcc -o host -DUSE_GPU=0 src/cuda.cu
 
 Die Kernfunktionalität befindet sich in der `singleIter` Funktion.
 
-Im ersten Schritt werden zwei zufällige Punkte ausgewählt und damit ein Model (in diesem Fall eine Gerade) geschätzt:
+Im ersten Schritt werden zwei zufällige Punkte $p$ und $q$ ausgewählt und damit ein Model (in diesem Fall eine Gerade) geschätzt:
 
 $$slope = \frac{q_y - p_y}{q_x - p_x}$$
 $$intercept = p_y - slope * p_x$$
@@ -36,15 +36,7 @@ Im nächsten Schritt wird berechnet, wie viele Punkte sich in der Nähe der Gera
 1. Mittels `thrust::transform` wird ein Vektor erzeugt, der angibt, ob ein Punkt in der Nähe des Models liegt oder nicht. Dafür wird der eigens definierte `thresh_op` Funktor verwendet. Eine 1 bedeutet, der Wert ist ein Inlier.
 2. Mit `thrust::inclusive_scan` wird eine kumulative Summe des Vektors erstellt. Mit dieser Summe kann dann ausgewählt werden, welche Indizes, Inlier sind.
 
-``` c
-int inliers[dataSize];
-for (int i = dataSize - 1; i >= 0; i--)
-{
-    inliers[indices[i]] = i;
-}
-```
-
-Zu Beginn des Programms wird eine Anzahl an Iterationen festgelegt und für jede Iteration ein Model berechnet. Abschließend wird das Model mit der höchsten Anzahl an Inliers ausgewählt. Die Menge der Inliers wird in eine Datei geschrieben, um auf dieser Menge einen Fit-Algorithmus anzuwenden, der dan die abschließende Gerade berechnet.
+Zu Beginn des Programms wird eine Anzahl an Iterationen festgelegt und für jede Iteration ein Model berechnet. Abschließend wird das Model mit der höchsten Anzahl an Inliers ausgewählt. Die Menge der Inliers wird in eine Datei geschrieben, um auf dieser Menge einen Fit-Algorithmus anzuwenden, der dann die abschließende Gerade berechnet.
 
 ## Benutzung
 

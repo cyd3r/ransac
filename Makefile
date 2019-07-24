@@ -20,3 +20,7 @@ cleanfig:
 	rm -f *.jpg
 cleandat:
 	rm -f *.csv *.txt
+
+report: report/*
+	cd report; pandoc -o report.pdf report.md
+
