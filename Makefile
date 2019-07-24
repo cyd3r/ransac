@@ -1,5 +1,7 @@
 CC=nvcc
 
+# build binaries
+
 all: gpu host
 
 gpu: src/cuda.cu
@@ -8,8 +10,12 @@ gpu: src/cuda.cu
 host: src/cuda.cu
 	$(CC) -o host.out -DUSE_GPU=0 src/cuda.cu
 
-clean:
-	rm -f *.out
+# clean commands
+
+clean: cleanbin cleanfig cleandat
+
+cleanbin:
+	rm -f *.out */__pycache__
 cleanfig:
 	rm -f *.jpg
 cleandat:

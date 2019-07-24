@@ -1,4 +1,4 @@
-An implementation of the RANSAC algorithm. The goal is to provide a GPU implementation as well and compare the two.
+An implementation of the RANSAC algorithm on the GPU using NVIDIA CUDA.
 
 ## Requirements
 
